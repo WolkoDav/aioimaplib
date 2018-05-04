@@ -326,6 +326,7 @@ class IMAP4ClientProtocol(asyncio.Protocol):
         self.conn_lost_cb = conn_lost_cb
         self.compressor = None
         self.decompressor = None
+        self.lock = asyncio.Lock()
 
         self.tagnum = 0
         self.tagpre = int2ap(random.randint(4096, 65535))
@@ -429,6 +430,8 @@ class IMAP4ClientProtocol(asyncio.Protocol):
                 yield from self.pending_async_commands[command.untagged_resp_name].wait()
             self.pending_async_commands[command.untagged_resp_name] = command
 
+        while (yield from self.lock.locked()):
+            pass
         self.send(str(command))
         try:
             yield from command.wait()
@@ -625,10 +628,15 @@ class IMAP4ClientProtocol(asyncio.Protocol):
     def enable_compression(self):
         if 'COMPRESS=DEFLATE' not in self.capabilities:
             raise Abort('server has not COMPRESS capability')
-        response = yield from self.simple_command('COMPRESS', 'DEFLATE')
-        if response.result == 'OK':
-            log.debug('Enable zlib compression')
-            self.start_compressing()
+        self.lock.acquire()
+        try:
+            response = yield from self.simple_command('COMPRESS', 'DEFLATE')
+            if response.result == 'OK':
+                log.debug('Enable zlib compression')
+                self.start_compressing()
+            return response
+        finally:
+            self.lock.release()
 
     def _untagged_response(self, line):
         line = line.replace('* ', '')
