@@ -28,6 +28,7 @@ import functools
 
 import random
 from collections import namedtuple
+import zlib
 
 # to avoid imap servers to kill the connection after 30mn idling
 # cf https://www.imapwiki.org/ClientImplementation/Synchronization
@@ -323,6 +324,8 @@ class IMAP4ClientProtocol(asyncio.Protocol):
         self.incomplete_line = b''
         self.current_command = None
         self.conn_lost_cb = conn_lost_cb
+        self.compressor = None
+        self.decompressor = None
 
         self.tagnum = 0
         self.tagpre = int2ap(random.randint(4096, 65535))
@@ -331,10 +334,15 @@ class IMAP4ClientProtocol(asyncio.Protocol):
         self.transport = transport
         self.state = CONNECTED
 
-    def data_received(self, d):
-        log.debug('Received : %s' % d)
+    def data_received(self, data):
+        log.debug('Received : %s' % data)
+        if self.decompressor is not None:
+            log.debug('Decompress data')
+            if self.decompressor.unconsumed_tail:
+                data += self.decompressor.unconsumed_tail
+            data = self.decompressor.decompress(data)
         try:
-            self._handle_responses(self.incomplete_line + d, self._handle_line, self.current_command)
+            self._handle_responses(self.incomplete_line + data, self._handle_line, self.current_command)
             self.incomplete_line = b''
             self.current_command = None
         except IncompleteRead as incomplete_read:
@@ -398,6 +406,10 @@ class IMAP4ClientProtocol(asyncio.Protocol):
     def send(self, line):
         data = ('%s\r\n' % line).encode()
         log.debug('Sending : %s' % data)
+        if self.compressor is not None:
+            log.debug('Compress line')
+            data = self.compressor.compress(data)
+            data += self.compressor.flush(zlib.Z_SYNC_FLUSH)
         self.transport.write(data)
 
     @asyncio.coroutine
@@ -605,6 +617,19 @@ class IMAP4ClientProtocol(asyncio.Protocol):
         with (yield from self.state_condition):
             yield from self.state_condition.wait_for(lambda: state_re.match(self.state))
 
+    def start_compressing(self):
+        self.decompressor = zlib.decompressobj(-15)
+        self.compressor = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+
+    @asyncio.coroutine
+    def enable_compression(self):
+        if 'COMPRESS=DEFLATE' not in self.capabilities:
+            raise Abort('server has not COMPRESS capability')
+        response = yield from self.simple_command('COMPRESS', 'DEFLATE')
+        if response.result == 'OK':
+            log.debug('Enable zlib compression')
+            self.start_compressing()
+
     def _untagged_response(self, line):
         line = line.replace('* ', '')
         if self.pending_sync_command is not None:
@@ -676,7 +701,15 @@ class IMAP4ClientProtocol(asyncio.Protocol):
 class IMAP4(object):
     TIMEOUT_SECONDS = 10
 
-    def __init__(self, host='127.0.0.1', port=IMAP4_PORT, loop=asyncio.get_event_loop(), timeout=TIMEOUT_SECONDS, conn_lost_cb=None, ssl_context=None):
+    def __init__(
+            self,
+            host='127.0.0.1',
+            port=IMAP4_PORT,
+            loop=asyncio.get_event_loop(),
+            timeout=TIMEOUT_SECONDS,
+            conn_lost_cb=None,
+            ssl_context=None
+    ):
         self.timeout = timeout
         self.port = port
         self.host = host
@@ -839,6 +872,10 @@ class IMAP4(object):
 
         return (yield from asyncio.wait_for(self.protocol.simple_command('ENABLE', capability), self.timeout))
 
+    @asyncio.coroutine
+    def enable_compression(self):
+        return (yield from asyncio.wait_for(self.protocol.enable_compression(), self.timeout))
+
     def has_capability(self, capability):
         return capability in self.protocol.capabilities
 
@@ -871,8 +908,10 @@ def int2ap(num):
         val += ap[mod:mod + 1]
     return val
 
+
 Months = ' Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')
-Mon2num = {s.encode():n+1 for n, s in enumerate(Months[1:])}
+Mon2num = {s.encode(): n+1 for n, s in enumerate(Months[1:])}
+
 
 def time2internaldate(date_time):
     """Convert date_time to IMAP4 INTERNALDATE representation.
