@@ -42,7 +42,7 @@ log.addHandler(sh)
 
 NONAUTH, AUTH, SELECTED, IDLE, LOGOUT = 'NONAUTH', 'AUTH', 'SELECTED', 'IDLE', 'LOGOUT'
 UID_RANGE_RE = re.compile(r'(?P<start>\d+):(?P<end>\d|\*)')
-CAPABILITIES = 'IDLE UIDPLUS MOVE ENABLE NAMESPACE'
+CAPABILITIES = 'IDLE UIDPLUS MOVE ENABLE NAMESPACE COMPRESS=DEFLATE'
 CRLF = b'\r\n'
 
 
@@ -547,6 +547,9 @@ class ImapProtocol(asyncio.Protocol):
 
     def check(self, tag, *args):
         self.send_tagged_line(tag, 'OK CHECK completed.')
+
+    def compress(self, tag, *args):
+        self.send_tagged_line(tag, 'OK DEFLATE active')
 
     def status(self, tag, *args):
         mailbox_name = args[0]

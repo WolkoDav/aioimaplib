@@ -790,6 +790,12 @@ class TestAioimaplib(AioWithImapServer, asynctest.TestCase):
         response = yield from imap_client.id()
         self.assertEqual(('OK', ['ID command completed']), response)
 
+    @asyncio.coroutine
+    def test_rfc4978_compress(self):
+        imap_client = yield from self.login_user('user', 'pass')
+        response = yield from imap_client.enable_compression()
+        self.assertEqual(('OK', ['OK DEFLATE active']), response)
+
 
 class TestImapServerCapabilities(AioWithImapServer, asynctest.TestCase):
     def setUp(self):
@@ -834,6 +840,12 @@ class TestImapServerCapabilities(AioWithImapServer, asynctest.TestCase):
         imap_client = yield from self.login_user('user', 'pass')
         with self.assertRaises(Abort):
             yield from imap_client.namespace()
+
+    @asyncio.coroutine
+    def test_namespace_without_compress_capability_abort_command(self):
+        imap_client = yield from self.login_user('user', 'pass')
+        with self.assertRaises(Abort):
+            yield from imap_client.enable_compression()
 
 
 class TestAioimaplibClocked(AioWithImapServer, asynctest.ClockedTestCase):
